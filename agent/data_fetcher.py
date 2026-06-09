@@ -1,0 +1,85 @@
+"""
+Assembles the full data packet that gets sent to brain.py / Claude.
+Calls screener → technical → news and merges with current portfolio state from logger.
+"""
+
+import logging
+
+from agent import logger as trade_logger
+from agent.news import get_news
+from agent.screener import build_watchlist
+from agent.technical import get_technicals
+
+log = logging.getLogger(__name__)
+
+
+def build_data_packet(portfolio_override: dict | None = None) -> dict:
+    """
+    Build and return the complete data packet for a morning analysis run.
+
+    portfolio_override: optional dict with keys cash, total_value, open_positions, open_shorts.
+    If not provided, values are read from logs/trades.json (logger).
+
+    Returns the packet dict ready to pass to brain.run_analysis().
+    """
+
+    # 1. Dynamic watchlist
+    log.info("Building watchlist...")
+    watchlist, earnings_today, earnings_tomorrow = build_watchlist()
+    log.info("Watchlist: %d tickers | Earnings today: %s", len(watchlist), earnings_today)
+
+    # 2. Technical indicators (batch fetch)
+    log.info("Fetching technicals for %d tickers...", len(watchlist))
+    market_data = get_technicals(watchlist)
+    log.info("Technicals ready: %d tickers", len(market_data))
+
+    # 3. News
+    log.info("Fetching news...")
+    news = get_news(watchlist)
+    log.info("News ready: %d sources covered", len(news))
+
+    # 4. Portfolio state
+    if portfolio_override:
+        portfolio = portfolio_override
+    else:
+        open_positions, open_shorts = trade_logger.get_open_positions()
+        # Cash and total_value must be provided via override when running manually.
+        # When called from main.py these come in from the request body.
+        log.warning(
+            "No portfolio_override provided; using logged positions with placeholder cash. "
+            "Pass portfolio_override with current cash for accurate sizing."
+        )
+        portfolio = {
+            "cash": 50_000.0,
+            "total_value": 50_000.0,
+            "open_positions": open_positions,
+            "open_shorts": open_shorts,
+        }
+
+    return {
+        "portfolio": portfolio,
+        "market_data": market_data,
+        "news": news,
+        "earnings_today": earnings_today,
+        "earnings_tomorrow": earnings_tomorrow,
+    }
+
+
+if __name__ == "__main__":
+    import json
+    import os
+
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    packet = build_data_packet()
+    # Print a summary without the full news/market_data blobs
+    print(f"\nWatchlist tickers ({len(packet['market_data'])}):")
+    print(", ".join(packet["market_data"].keys()))
+    print(f"\nEarnings today: {packet['earnings_today']}")
+    print(f"Earnings tomorrow: {packet['earnings_tomorrow']}")
+    print(f"\nPortfolio cash: ${packet['portfolio']['cash']:,.2f}")
+    print(f"Open positions: {len(packet['portfolio']['open_positions'])}")
+    print(f"Open shorts:    {len(packet['portfolio']['open_shorts'])}")

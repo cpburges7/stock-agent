@@ -1,0 +1,11 @@
+anthropic
+fastapi
+uvicorn[standard]
+yfinance
+pandas-ta
+pandas
+numpy
+python-dotenv
+requests
+httpx
+feedparser
