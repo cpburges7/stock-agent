@@ -42,19 +42,12 @@ def build_data_packet(portfolio_override: dict | None = None) -> dict:
     if portfolio_override:
         portfolio = portfolio_override
     else:
-        open_positions, open_shorts = trade_logger.get_open_positions()
-        # Cash and total_value must be provided via override when running manually.
-        # When called from main.py these come in from the request body.
-        log.warning(
-            "No portfolio_override provided; using logged positions with placeholder cash. "
-            "Pass portfolio_override with current cash for accurate sizing."
+        portfolio = trade_logger.get_portfolio_state()
+        log.info(
+            "Using persisted portfolio: cash=%.2f, total=%.2f",
+            portfolio.get("cash", 0),
+            portfolio.get("total_value", 0),
         )
-        portfolio = {
-            "cash": 50_000.0,
-            "total_value": 50_000.0,
-            "open_positions": open_positions,
-            "open_shorts": open_shorts,
-        }
 
     return {
         "portfolio": portfolio,

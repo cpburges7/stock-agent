@@ -1,6 +1,6 @@
 """
-FastAPI entry point. Exposes /analyze, /monitor, /health.
-All endpoints require X-API-Key header matching AGENT_API_KEY in .env.
+FastAPI entry point. Exposes /analyze, /monitor, /positions, /health.
+All endpoints except /health require X-API-Key header matching AGENT_API_KEY in .env.
 """
 
 import logging
@@ -45,34 +45,15 @@ def _verify_api_key(key: str | None = Security(_API_KEY_HEADER)) -> str:
 # Request / response models
 # ---------------------------------------------------------------------------
 
-class Portfolio(BaseModel):
+class AnalyzeRequest(BaseModel):
+    triggered_by: str = Field(default="n8n")
+
+
+class PortfolioState(BaseModel):
     cash: float = Field(..., description="Current cash balance in USD")
     total_value: float = Field(..., description="Total portfolio value in USD")
     open_positions: list[dict] = Field(default_factory=list)
     open_shorts: list[dict] = Field(default_factory=list)
-
-
-class AnalyzeRequest(BaseModel):
-    portfolio: Portfolio
-    triggered_by: str = Field(default="n8n")
-
-
-class Position(BaseModel):
-    ticker: str
-    direction: str = Field(default="LONG", description="LONG or SHORT")
-    entry_price: float
-    shares: int
-    target_price: float | None = None
-    cover_target: float | None = None
-    stop_loss: float
-    time_horizon_days: int = 5
-    opened_date: str | None = None
-    is_day_trade: bool = False
-
-
-class PositionsUpdate(BaseModel):
-    open_positions: list[Position] = Field(default_factory=list)
-    open_shorts: list[Position] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -93,14 +74,13 @@ def analyze(request: AnalyzeRequest):
     """
     Full morning analysis run. Builds dynamic watchlist, fetches technicals and news,
     runs Claude analysis, validates positions, saves to log. Called by n8n at 9:30 AM ET.
+    Reads current portfolio state from logs/trades.json (set via POST /positions).
     """
     from agent.brain import run_analysis
     from agent.data_fetcher import build_data_packet
 
-    portfolio_dict = request.portfolio.model_dump()
-
     try:
-        data_packet = build_data_packet(portfolio_override=portfolio_dict)
+        data_packet = build_data_packet()
         result = run_analysis(data_packet=data_packet, triggered_by=request.triggered_by)
     except Exception as e:
         log.exception("Analysis failed")
@@ -126,25 +106,26 @@ def monitor():
     return {"alerts": alerts, "count": len(alerts)}
 
 
-@app.patch("/positions", dependencies=[Depends(_verify_api_key)])
-def update_positions(request: PositionsUpdate):
+@app.post("/positions", dependencies=[Depends(_verify_api_key)])
+def set_positions(portfolio: PortfolioState):
     """
-    Update open positions after manually executing trades on StockTrak.
-    Call this after every trade so the monitor has accurate state.
+    Save the current full portfolio state. Call this after executing trades on StockTrak.
+    Overwrites the previous state — send the complete current picture each time.
     """
     from agent import logger as trade_logger
 
-    longs = [p.model_dump() for p in request.open_positions]
-    shorts = [p.model_dump() for p in request.open_shorts]
-
     try:
-        trade_logger.update_positions(longs, shorts)
+        saved = trade_logger.save_portfolio_state(portfolio.model_dump())
     except Exception as e:
-        log.exception("Position update failed")
+        log.exception("Portfolio save failed")
         raise HTTPException(status_code=500, detail=str(e))
 
-    return {
-        "status": "updated",
-        "open_positions": len(longs),
-        "open_shorts": len(shorts),
-    }
+    return {"status": "saved", **saved}
+
+
+@app.get("/positions", dependencies=[Depends(_verify_api_key)])
+def get_positions():
+    """Return the current saved portfolio state."""
+    from agent import logger as trade_logger
+
+    return trade_logger.get_portfolio_state()

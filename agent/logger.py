@@ -1,12 +1,11 @@
 """
 Persistent trade log. Reads/writes logs/trades.json.
 Structure:
-  { "analyses": [...], "open_positions": [...], "open_shorts": [...] }
+  { "portfolio": {...}, "analyses": [...] }
 """
 
 import json
 import logging
-import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,7 +14,14 @@ LOG_PATH = Path(__file__).parent.parent / "logs" / "trades.json"
 
 logger = logging.getLogger(__name__)
 
-_EMPTY = {"analyses": [], "open_positions": [], "open_shorts": []}
+_EMPTY = {"analyses": [], "portfolio": None}
+
+_DEFAULT_PORTFOLIO = {
+    "cash": 50_008.22,
+    "total_value": 50_008.22,
+    "open_positions": [],
+    "open_shorts": [],
+}
 
 
 def _read() -> dict:
@@ -25,7 +31,6 @@ def _read() -> dict:
     try:
         with open(LOG_PATH) as f:
             data = json.load(f)
-        # Ensure all top-level keys exist
         for k, v in _EMPTY.items():
             data.setdefault(k, v)
         return data
@@ -55,22 +60,48 @@ def save_analysis(result: dict, triggered_by: str = "manual") -> str:
     return run_id
 
 
-def get_open_positions() -> tuple[list, list]:
-    """Return (open_positions, open_shorts) from the log."""
+def get_portfolio_state() -> dict:
+    """Return the current portfolio state, or the default starting state if none saved."""
     data = _read()
-    return data.get("open_positions", []), data.get("open_shorts", [])
+    portfolio = data.get("portfolio")
+    if portfolio is None:
+        return dict(_DEFAULT_PORTFOLIO)
+    return portfolio
+
+
+def save_portfolio_state(portfolio_dict: dict) -> dict:
+    """
+    Overwrite the portfolio section of trades.json with the provided state.
+    Adds a last_updated timestamp. Returns the saved portfolio object.
+    """
+    data = _read()
+    portfolio = dict(portfolio_dict)
+    portfolio["last_updated"] = datetime.now(timezone.utc).isoformat()
+    data["portfolio"] = portfolio
+    _write(data)
+    logger.info(
+        "Portfolio saved: cash=%.2f, total=%.2f, %d long, %d short",
+        portfolio.get("cash", 0),
+        portfolio.get("total_value", 0),
+        len(portfolio.get("open_positions", [])),
+        len(portfolio.get("open_shorts", [])),
+    )
+    return portfolio
+
+
+def get_open_positions() -> tuple[list, list]:
+    """Return (open_positions, open_shorts) from the current portfolio state."""
+    portfolio = get_portfolio_state()
+    return portfolio.get("open_positions", []), portfolio.get("open_shorts", [])
 
 
 def update_positions(open_positions: list, open_shorts: list | None = None) -> None:
-    """
-    Overwrite open positions in the log.
-    Call this after manually executing a trade on StockTrak.
-    """
-    data = _read()
-    data["open_positions"] = open_positions
+    """Overwrite open positions in the log (legacy — prefer save_portfolio_state)."""
+    portfolio = get_portfolio_state()
+    portfolio["open_positions"] = open_positions
     if open_shorts is not None:
-        data["open_shorts"] = open_shorts
-    _write(data)
+        portfolio["open_shorts"] = open_shorts
+    save_portfolio_state(portfolio)
     logger.info(
         "Positions updated: %d long, %d short",
         len(open_positions),

@@ -81,7 +81,7 @@ def _check_long(pos: dict, current_price: float) -> dict | None:
     target = pos.get("target_price", float("inf"))
     stop = pos.get("stop_loss", 0)
     horizon = pos.get("time_horizon_days", 5)
-    opened = pos.get("opened_date", "")
+    opened = pos.get("entry_date") or pos.get("opened_date", "")
     days = _days_held(opened) if opened else pos.get("days_held", 0)
     pnl_pct = round((current_price - entry) / entry * 100, 2) if entry else 0
 
@@ -135,7 +135,7 @@ def _check_short(pos: dict, current_price: float) -> dict | None:
     cover = pos.get("cover_target", 0)
     stop = pos.get("stop_loss", float("inf"))
     horizon = pos.get("time_horizon_days", 6)
-    opened = pos.get("opened_date", "")
+    opened = pos.get("entry_date") or pos.get("opened_date", "")
     days = _days_held(opened) if opened else pos.get("days_held", 0)
     pnl_pct = round((entry - current_price) / entry * 100, 2) if entry else 0
 
@@ -177,17 +177,19 @@ def check_positions() -> list[dict]:
     Main monitor entry point. Reads open positions from logger, fetches prices,
     and returns a list of alert dicts. Empty list = nothing to act on.
     """
-    open_positions, open_shorts = trade_logger.get_open_positions()
+    portfolio = trade_logger.get_portfolio_state()
+    open_positions = portfolio.get("open_positions", [])
+    open_shorts = portfolio.get("open_shorts", [])
+
+    if not open_positions and not open_shorts:
+        log.info("No open positions to monitor.")
+        return []
 
     all_tickers = list({
         pos["ticker"]
         for pos in (open_positions + open_shorts)
         if "ticker" in pos
     })
-
-    if not all_tickers:
-        log.info("No open positions to monitor.")
-        return []
 
     prices = _get_current_prices(all_tickers)
     log.info("Monitoring %d positions | prices fetched: %d", len(all_tickers), len(prices))
