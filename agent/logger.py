@@ -115,3 +115,43 @@ def get_latest_analysis() -> dict | None:
     if not data["analyses"]:
         return None
     return data["analyses"][-1]
+
+
+# ---------------------------------------------------------------------------
+# Snapshot log (logs/snapshots.json)
+# ---------------------------------------------------------------------------
+
+SNAPSHOT_PATH = LOG_PATH.parent / "snapshots.json"
+
+
+def get_previous_snapshot() -> dict | None:
+    """Return the most recent EOD snapshot, or None if none saved yet."""
+    if not SNAPSHOT_PATH.exists():
+        return None
+    try:
+        with open(SNAPSHOT_PATH) as f:
+            snapshots = json.load(f)
+        return snapshots[-1] if snapshots else None
+    except (json.JSONDecodeError, OSError) as e:
+        logger.error("Could not read snapshots.json: %s", e)
+        return None
+
+
+def save_snapshot(snapshot: dict) -> None:
+    """Append an EOD snapshot to snapshots.json."""
+    SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    snapshots: list = []
+    if SNAPSHOT_PATH.exists():
+        try:
+            with open(SNAPSHOT_PATH) as f:
+                snapshots = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            snapshots = []
+    snapshots.append(snapshot)
+    with open(SNAPSHOT_PATH, "w") as f:
+        json.dump(snapshots, f, indent=2, default=str)
+    logger.info(
+        "Snapshot saved: date=%s, estimated_value=%.2f",
+        snapshot.get("snapshot_date"),
+        snapshot.get("estimated_total_value", 0),
+    )

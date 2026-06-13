@@ -5,12 +5,44 @@ Calls screener → technical → news and merges with current portfolio state fr
 
 import logging
 
+import yfinance as yf
+
 from agent import logger as trade_logger
 from agent.news import get_news
 from agent.screener import build_watchlist
 from agent.technical import get_technicals
 
 log = logging.getLogger(__name__)
+
+
+def get_current_prices(tickers: list[str]) -> dict[str, float]:
+    """Fetch the most recent close price for each ticker via yfinance."""
+    if not tickers:
+        return {}
+    try:
+        data = yf.download(
+            tickers,
+            period="2d",
+            interval="1d",
+            progress=False,
+            auto_adjust=True,
+            threads=True,
+        )
+        closes = data.get("Close") if hasattr(data, "get") else data["Close"]
+        if closes is None or closes.empty:
+            return {}
+        if not hasattr(closes, "columns"):
+            closes = closes.to_frame(name=tickers[0])
+        prices = {}
+        for ticker in tickers:
+            if ticker in closes.columns:
+                val = closes[ticker].dropna()
+                if not val.empty:
+                    prices[ticker] = round(float(val.iloc[-1]), 2)
+        return prices
+    except Exception as e:
+        log.error("Price fetch failed: %s", e)
+        return {}
 
 
 def build_data_packet(portfolio_override: dict | None = None) -> dict:

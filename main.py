@@ -129,3 +129,22 @@ def get_positions():
     from agent import logger as trade_logger
 
     return trade_logger.get_portfolio_state()
+
+
+@app.post("/eod-snapshot", dependencies=[Depends(_verify_api_key)])
+def eod_snapshot():
+    """
+    Build and save an end-of-day portfolio snapshot.
+    Fetches live prices for all open positions, calculates unrealized P&L,
+    and appends the result to logs/snapshots.json.
+    Call this once daily around 4:05 PM ET after the close.
+    """
+    from agent.eod import build_eod_snapshot
+
+    try:
+        snapshot = build_eod_snapshot()
+    except Exception as e:
+        log.exception("EOD snapshot failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return snapshot
