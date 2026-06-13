@@ -157,6 +157,21 @@ def eod_snapshot():
     return snapshot
 
 
+@app.get("/regime", dependencies=[Depends(_verify_api_key)])
+def regime():
+    """
+    Current market regime: VIX level, SPY/QQQ trend, sector rotation, and risk-on/off classification.
+    Fast endpoint — no Claude call, all yfinance.
+    """
+    from agent.regime import get_market_regime
+
+    try:
+        return get_market_regime()
+    except Exception as e:
+        log.exception("Regime check failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/closed-positions", dependencies=[Depends(_verify_api_key)])
 def closed_positions():
     """Return all closed positions with win/loss summary stats."""

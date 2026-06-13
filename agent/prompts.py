@@ -55,6 +55,14 @@ EARNINGS PLAYS:
 - Always exit by end of day after earnings unless thesis extends beyond the reaction
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MARKET REGIME CONTEXT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- In RISK-ON regimes, favor momentum longs in leading sectors; be more cautious on shorts
+- In RISK-OFF regimes, favor defensive positioning, tighter stops, and shorts in lagging/weak sectors gain credibility
+- In MIXED regimes, rely more heavily on individual ticker technicals since broad market signals are unclear
+- A stock's sector matters: a tech stock setup is more credible if Technology is a leading sector that day, and vice versa
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TECHNICAL ANALYSIS INTERPRETATION RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - RSI > 70 + declining volume = distribution, bearish — short candidate or avoid long
@@ -214,16 +222,26 @@ Each alert: {"ticker": "X", "alert_type": "TAKE_PROFIT|STOP_LOSS|TIME_STOP|MARKE
 """
 
 
+_TREND_PROMPT_LABELS = {
+    "above_20ma_above_50ma": "above 20MA and 50MA (strong uptrend)",
+    "above_20ma_below_50ma": "above 20MA, below 50MA (short-term bounce)",
+    "below_20ma_above_50ma": "below 20MA, above 50MA (pullback in uptrend)",
+    "below_20ma_below_50ma": "below 20MA and 50MA (downtrend)",
+}
+
+
 def build_analysis_prompt(data_packet: dict) -> str:
     """
     Constructs the user-turn message for the morning analysis run.
-    data_packet must contain: portfolio, market_data, news, earnings_today, earnings_tomorrow
+    data_packet must contain: portfolio, market_data, news, earnings_today, earnings_tomorrow.
+    Optionally contains: regime (from get_market_regime()).
     """
     portfolio = data_packet.get("portfolio", {})
     market_data = data_packet.get("market_data", {})
     news = data_packet.get("news", {})
     earnings_today = data_packet.get("earnings_today", [])
     earnings_tomorrow = data_packet.get("earnings_tomorrow", [])
+    regime = data_packet.get("regime")
 
     lines = []
 
@@ -253,6 +271,26 @@ def build_analysis_prompt(data_packet: dict) -> str:
             )
     else:
         lines.append("Open short positions: none")
+
+    # Market regime — broad context before individual ticker data
+    if regime:
+        lines.append("\n=== MARKET REGIME ===")
+        vix = regime.get("vix_level")
+        vix_sig = regime.get("vix_signal", "")
+        vix_str = f"{vix:.1f} ({vix_sig.replace('_', ' ')})" if vix is not None else "N/A"
+        lines.append(f"VIX: {vix_str}")
+
+        spy = regime.get("spy_trend")
+        qqq = regime.get("qqq_trend")
+        spy_str = _TREND_PROMPT_LABELS.get(spy, spy or "N/A")
+        qqq_str = _TREND_PROMPT_LABELS.get(qqq, qqq or "N/A")
+        lines.append(f"SPY: {spy_str} | QQQ: {qqq_str}")
+
+        regime_label = regime.get("market_regime", "unknown").upper().replace("_", "-")
+        lines.append(f"Regime: {regime_label}")
+        lines.append(f"Leading sectors: {', '.join(regime.get('leading_sectors', []))}")
+        lines.append(f"Lagging sectors: {', '.join(regime.get('lagging_sectors', []))}")
+        lines.append(f"Summary: {regime.get('regime_summary', '')}")
 
     # Earnings catalysts (highest priority section)
     if earnings_today:

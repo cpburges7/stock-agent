@@ -81,12 +81,22 @@ def build_data_packet(portfolio_override: dict | None = None) -> dict:
             portfolio.get("total_value", 0),
         )
 
+    # 5. Market regime (single batch yfinance call; failures return a safe default)
+    log.info("Fetching market regime...")
+    try:
+        from agent.regime import get_market_regime
+        regime = get_market_regime()
+    except Exception as e:
+        log.error("Regime fetch failed: %s", e)
+        regime = None
+
     return {
         "portfolio": portfolio,
         "market_data": market_data,
         "news": news,
         "earnings_today": earnings_today,
         "earnings_tomorrow": earnings_tomorrow,
+        "regime": regime,
     }
 
 
