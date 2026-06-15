@@ -1,7 +1,15 @@
 """
 Multi-source financial news aggregator.
 Priority: Alpaca Markets API → NewsAPI.org → RSS fallback (Yahoo Finance / MarketWatch / Reuters)
-Returns per-ticker headline lists with source, time, and sentiment flag.
+Returns per-ticker headline lists with source, time, sentiment flag, AND freshness metadata.
+
+CHANGES FROM YOUR ORIGINAL (all marked with #  <<< NEW or #  <<< CHANGED):
+  1. Every article now carries a real datetime + age in hours + a FRESH/RECENT/STALE tag.
+  2. _fmt_time() now includes the DATE, not just HH:MM — so the model can never mistake
+     a 9-day-old article for today's news (this was the root cause of the inverted oil thesis).
+  3. A hard freshness filter drops anything older than MAX_NEWS_AGE_HOURS before it can
+     reach the prompt. Articles with no parseable timestamp are dropped (can't be trusted).
+  4. get_news() returns a small "_meta" block so the brain can tell when news was thin/stale.
 """
 
 import logging
@@ -12,6 +20,14 @@ import feedparser
 import requests
 
 logger = logging.getLogger(__name__)
+
+# ---- Freshness knobs --------------------------------------------------  #  <<< NEW
+# Hard cutoff: any article older than this never reaches the prompt.
+MAX_NEWS_AGE_HOURS = 36
+# Articles newer than this are tagged FRESH (the model is told to weight these heavily).
+FRESH_NEWS_AGE_HOURS = 18
+# Market headlines can be a touch older and still be useful context.
+MAX_MARKET_NEWS_AGE_HOURS = 48
 
 _POSITIVE_WORDS = {
     "beat", "beats", "rally", "rallied", "surge", "surged", "gain", "gained",
@@ -39,10 +55,54 @@ def _sentiment(headline: str) -> str:
     return "neutral"
 
 
-def _fmt_time(dt: datetime | None) -> str:
+def _fmt_time(dt: datetime | None) -> str:  #  <<< CHANGED — now includes the DATE
+    """
+    Format with full date + time so a stale article can NEVER masquerade as today's.
+    Old version returned only 'HH:MM ET', which is what let 9-day-old Iran-deal news
+    look like breaking news. Never go back to a time-only format here.
+    """
     if dt is None:
-        return ""
-    return dt.strftime("%H:%M ET")
+        return "unknown-date"
+    return dt.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _age_hours(dt: datetime | None) -> float | None:  #  <<< NEW
+    if dt is None:
+        return None
+    now = datetime.now(timezone.utc)
+    delta = (now - dt).total_seconds() / 3600.0
+    return max(delta, 0.0)  # clock-skew guard
+
+
+def _freshness_tag(age_hours: float | None) -> str:  #  <<< NEW
+    if age_hours is None:
+        return "UNDATED"
+    if age_hours <= FRESH_NEWS_AGE_HOURS:
+        return "FRESH"
+    if age_hours <= MAX_NEWS_AGE_HOURS:
+        return "RECENT"
+    return "STALE"
+
+
+def _make_item(headline: str, source: str, dt: datetime | None) -> dict:  #  <<< NEW helper
+    """Build a single news item with full freshness metadata attached."""
+    age = _age_hours(dt)
+    return {
+        "headline": headline,
+        "source": source,
+        "time": _fmt_time(dt),          # now date+time
+        "age_hours": round(age, 1) if age is not None else None,
+        "freshness": _freshness_tag(age),
+        "sentiment": _sentiment(headline),
+    }
+
+
+def _is_fresh_enough(item: dict, max_age: int = MAX_NEWS_AGE_HOURS) -> bool:  #  <<< NEW
+    """Drop STALE and UNDATED items — only FRESH/RECENT within max_age survive."""
+    age = item.get("age_hours")
+    if age is None:
+        return False          # no timestamp = can't trust = drop
+    return age <= max_age
 
 
 def _from_alpaca(tickers: list[str], limit_per_ticker: int = 3) -> dict[str, list[dict]]:
@@ -78,17 +138,13 @@ def _from_alpaca(tickers: list[str], limit_per_ticker: int = 3) -> dict[str, lis
         source = article.get("source", "Alpaca")
         published = article.get("created_at", "")
         try:
-            dt = datetime.fromisoformat(published.replace("Z", "+00:00"))
-            time_str = _fmt_time(dt.astimezone(timezone.utc))
+            dt = datetime.fromisoformat(published.replace("Z", "+00:00")).astimezone(timezone.utc)
         except Exception:
-            time_str = ""
+            dt = None
 
-        item = {
-            "headline": headline,
-            "source": source,
-            "time": time_str,
-            "sentiment": _sentiment(headline),
-        }
+        item = _make_item(headline, source, dt)  #  <<< CHANGED
+        if not _is_fresh_enough(item):           #  <<< NEW — drop stale BEFORE it spreads
+            continue
 
         for sym in article.get("symbols", []):
             if sym in tickers:
@@ -96,7 +152,7 @@ def _from_alpaca(tickers: list[str], limit_per_ticker: int = 3) -> dict[str, lis
                 if len(out[sym]) < limit_per_ticker:
                     out[sym].append(item)
 
-    logger.info("Alpaca: got news for %d tickers", len(out))
+    logger.info("Alpaca: %d tickers with FRESH news", len(out))
     return out
 
 
@@ -107,7 +163,7 @@ def _from_newsapi(tickers: list[str], limit_per_ticker: int = 3) -> dict[str, li
         return {}
 
     out: dict[str, list[dict]] = {}
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=MAX_NEWS_AGE_HOURS)  #  <<< CHANGED (was 24h)
 
     for ticker in tickers:
         try:
@@ -137,23 +193,21 @@ def _from_newsapi(tickers: list[str], limit_per_ticker: int = 3) -> dict[str, li
             source = article.get("source", {}).get("name", "NewsAPI")
             published = article.get("publishedAt", "")
             try:
-                dt = datetime.fromisoformat(published.replace("Z", "+00:00"))
-                time_str = _fmt_time(dt)
+                dt = datetime.fromisoformat(published.replace("Z", "+00:00")).astimezone(timezone.utc)
             except Exception:
-                time_str = ""
-            items.append({
-                "headline": headline,
-                "source": source,
-                "time": time_str,
-                "sentiment": _sentiment(headline),
-            })
+                dt = None
+
+            item = _make_item(headline, source, dt)  #  <<< CHANGED
+            if not _is_fresh_enough(item):           #  <<< NEW
+                continue
+            items.append(item)
             if len(items) >= limit_per_ticker:
                 break
 
         if items:
             out[ticker] = items
 
-    logger.info("NewsAPI: got news for %d tickers", len(out))
+    logger.info("NewsAPI: %d tickers with FRESH news", len(out))
     return out
 
 
@@ -166,26 +220,23 @@ def _from_rss(tickers: list[str], limit_per_ticker: int = 3) -> dict[str, list[d
         try:
             feed = feedparser.parse(url)
             items = []
-            for entry in feed.entries[:limit_per_ticker]:
+            for entry in feed.entries[:limit_per_ticker + 3]:  # grab a few extra, some will be stale
                 headline = entry.get("title", "")
                 published = entry.get("published_parsed")
-                if published:
-                    dt = datetime(*published[:6], tzinfo=timezone.utc)
-                    time_str = _fmt_time(dt)
-                else:
-                    time_str = ""
-                items.append({
-                    "headline": headline,
-                    "source": "Yahoo Finance",
-                    "time": time_str,
-                    "sentiment": _sentiment(headline),
-                })
+                dt = datetime(*published[:6], tzinfo=timezone.utc) if published else None
+
+                item = _make_item(headline, "Yahoo Finance", dt)  #  <<< CHANGED
+                if not _is_fresh_enough(item):                    #  <<< NEW
+                    continue
+                items.append(item)
+                if len(items) >= limit_per_ticker:
+                    break
             if items:
                 out[ticker] = items
         except Exception as e:
             logger.warning("RSS fetch failed for %s: %s", ticker, e)
 
-    logger.info("RSS: got news for %d tickers", len(out))
+    logger.info("RSS: %d tickers with FRESH news", len(out))
     return out
 
 
@@ -199,53 +250,62 @@ def _from_rss_market() -> list[dict]:
     for url, source in feeds:
         try:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:4]:
+            for entry in feed.entries[:6]:
                 headline = entry.get("title", "")
                 published = entry.get("published_parsed")
-                time_str = ""
-                if published:
-                    dt = datetime(*published[:6], tzinfo=timezone.utc)
-                    time_str = _fmt_time(dt)
-                items.append({
-                    "headline": headline,
-                    "source": source,
-                    "time": time_str,
-                    "sentiment": _sentiment(headline),
-                })
+                dt = datetime(*published[:6], tzinfo=timezone.utc) if published else None
+                item = _make_item(headline, source, dt)  #  <<< CHANGED
+                if not _is_fresh_enough(item, MAX_MARKET_NEWS_AGE_HOURS):  #  <<< NEW
+                    continue
+                items.append(item)
         except Exception as e:
             logger.warning("Market RSS fetch failed (%s): %s", source, e)
+    # newest first
+    items.sort(key=lambda i: i.get("age_hours") if i.get("age_hours") is not None else 1e9)
     return items[:8]
 
 
 def get_news(tickers: list[str]) -> dict[str, list[dict]]:
     """
-    Fetch news for all tickers using the priority chain:
+    Fetch FRESH news for all tickers using the priority chain:
       Alpaca → NewsAPI (for missing tickers) → RSS (for still-missing tickers)
-    Also adds a "market" key with general market headlines.
+    Adds a "market" key with general headlines and a "_meta" key with freshness stats
+    so the brain/prompt can react when news is thin or stale.
     """
     out: dict[str, list[dict]] = {}
 
-    # Layer 1: Alpaca
     alpaca_results = _from_alpaca(tickers)
     out.update(alpaca_results)
 
-    # Layer 2: NewsAPI for tickers not covered by Alpaca
     missing = [t for t in tickers if t not in out]
     if missing:
-        newsapi_results = _from_newsapi(missing)
-        out.update(newsapi_results)
+        out.update(_from_newsapi(missing))
 
-    # Layer 3: RSS fallback for still-missing tickers
     still_missing = [t for t in tickers if t not in out]
     if still_missing:
-        rss_results = _from_rss(still_missing)
-        out.update(rss_results)
+        out.update(_from_rss(still_missing))
 
-    # General market news
     out["market"] = _from_rss_market()
 
-    covered = sum(1 for t in tickers if t in out)
-    logger.info("News coverage: %d/%d tickers", covered, len(tickers))
+    # ---- freshness summary for downstream guardrails ----  #  <<< NEW
+    ticker_items = [it for t, items in out.items() if t not in ("market", "_meta") for it in items]
+    fresh_count = sum(1 for it in ticker_items if it.get("freshness") == "FRESH")
+    covered = sum(1 for t in tickers if t in out and t not in ("market", "_meta"))
+    newest_age = min((it["age_hours"] for it in ticker_items if it.get("age_hours") is not None),
+                     default=None)
+
+    out["_meta"] = {
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "tickers_requested": len(tickers),
+        "tickers_covered": covered,
+        "total_fresh_items": fresh_count,
+        "newest_item_age_hours": round(newest_age, 1) if newest_age is not None else None,
+        "news_is_thin": covered < max(1, len(tickers) // 2) or fresh_count == 0,
+    }
+
+    logger.info("News coverage: %d/%d tickers, %d fresh items, newest %.1fh old",
+                covered, len(tickers), fresh_count,
+                newest_age if newest_age is not None else -1)
     return out
 
 
@@ -253,7 +313,11 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     sample = ["NVDA", "AAPL", "SPY"]
     results = get_news(sample)
+    print("\n_meta:", results.get("_meta"))
     for ticker, headlines in results.items():
+        if ticker == "_meta":
+            continue
         print(f"\n{ticker}:")
         for h in headlines:
-            print(f"  [{h['source']} {h['time']}] {h['headline']} ({h['sentiment']})")
+            print(f"  [{h['freshness']} | {h['time']} | {h['source']}] "
+                  f"{h['headline']} ({h['sentiment']})")

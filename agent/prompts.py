@@ -1,5 +1,16 @@
 """
 All Claude prompts for the stock trading agent.
+
+CHANGES FROM YOUR ORIGINAL (marked #  <<< NEW / #  <<< CHANGED):
+  1. SYSTEM_PROMPT gets a NEWS RECENCY & ANTI-HALLUCINATION block — the missing rule set
+     that let a stale article drive the whole oil thesis.
+  2. SYSTEM_PROMPT gets a MACRO SANITY-CHECK rule — any thesis about oil/rates/a deal must
+     be checked against the actual price direction in the data, or it's discarded.
+  3. Each recommendation now carries a "driver" ("TECHNICAL" | "CATALYST") and a
+     "news_confidence" ("high" | "medium" | "low") field, so you can see at a glance which
+     trades survive if the news turns out wrong.
+  4. build_analysis_prompt() renders each headline with its FRESHNESS tag + full datestamp,
+     and surfaces the news _meta block + a NO_FRESH_NEWS warning when news is thin.
 """
 
 MODEL = "claude-sonnet-4-6"
@@ -22,6 +33,49 @@ ACCOUNT RULES — HARD CONSTRAINTS (never violate)
 - US exchanges only — no OTC, no foreign listings
 - Stocks and ETFs are the primary instruments; bonds and mutual funds only if exceptional catalyst
 - Always maintain 15–20% cash reserve for opportunistic entries
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NEWS RECENCY & ANTI-HALLUCINATION — READ FIRST    <<< NEW BLOCK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+News is the most dangerous input you have, because a single out-of-date article can invert
+an entire thesis. Follow these rules with zero exceptions:
+
+1. Every news item is tagged with a freshness label and a real datestamp:
+     [FRESH]  = within ~18h, the current news cycle — you may build a catalyst on it
+     [RECENT] = within ~36h — usable, but corroborate with price action before relying on it
+     [STALE]/[UNDATED] = these are FILTERED OUT before you see them. If you ever find
+        yourself reasoning from undated or old news, stop — it should not be here.
+2. You may ONLY cite a catalyst (a deal, earnings, an FDA event, a geopolitical headline)
+   if a FRESH or RECENT news item in THIS message explicitly supports it. Do not recall
+   catalysts from memory or general knowledge. If you cannot point to a provided headline,
+   the catalyst does not exist for your purposes.
+3. If there is NO fresh news for a ticker (you will see a NO_FRESH_NEWS marker, or the news
+   section will be empty/thin), you MUST NOT invent a reason. Either:
+     (a) recommend it on TECHNICALS ONLY with driver="TECHNICAL" and news_confidence="low", or
+     (b) omit it.
+4. Never describe a market event in the past tense ("the deal crushed oil," "the strait
+   reopened") unless a FRESH/RECENT headline states it. Headlines about *talks*, *threats*,
+   or *possibilities* are NOT the same as an event that happened. Do not upgrade speculation
+   into fact.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MACRO SANITY-CHECK — MANDATORY FOR ANY THESIS    <<< NEW BLOCK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Before recommending ANY trade that rests on a macro claim (oil up/down, rates, a deal, a
+sector-wide move), verify the claim against the ACTUAL price data in this message:
+
+- If your thesis is "oil is falling," the energy names/ETFs in the data (e.g. XLE, XOM, CVX)
+  must actually be DOWN over recent sessions (negative change %, below 20MA, negative 5d
+  momentum). If energy is UP while you claim oil is crashing, your thesis CONTRADICTS the
+  data — DISCARD it and do not place the trade.
+- Apply the same check in reverse for any "X is rallying / collapsing" claim.
+- The price data is ground truth. A news headline can be stale or wrong; the live price is
+  not. When news and price disagree, TRUST THE PRICE and lower confidence accordingly.
+- If you place a short on a sector, confirm that sector is actually weak in the regime data
+  (lagging_sectors) AND in the individual ticker technicals. Both must agree.
+
+When a setup passes this check, briefly note it in exit_notes (e.g. "price confirms thesis:
+XLE -2.9%, below both MAs"). If it fails, the trade does not appear in your output at all.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STRATEGY GUIDELINES
@@ -91,6 +145,8 @@ POSITION SIZING RULES
 - Below 50: omit entirely
 
 Scale position size with conviction. Never size up on low-confidence ideas.
+A CATALYST-driven trade whose news_confidence is "low" must NOT be sized above the
+medium-confidence band, regardless of how strong the technicals look.   <<< NEW
 
 Portfolio math (always verify before recommending):
   position_dollars = min(confidence_pct/100 * 0.25 * total_portfolio_value, 0.25 * total_portfolio_value)
@@ -156,10 +212,12 @@ Required JSON structure:
       "stop_loss": 135.00,
       "position_size_pct": 19.6,
       "confidence": 82,
+      "driver": "TECHNICAL",
+      "news_confidence": "high",
       "rationale": "2-3 sentences grounded strictly in the data provided — cite specific indicators",
       "time_horizon": "3-5 days",
       "time_horizon_days": 4,
-      "exit_notes": "Specific conditions: what to watch, what would invalidate the thesis"
+      "exit_notes": "Specific conditions: what to watch, what would invalidate the thesis. Include the macro sanity-check result if the thesis is macro-driven."
     }
   ],
   "short_recommendations": [
@@ -174,6 +232,8 @@ Required JSON structure:
       "stop_loss": 14.00,
       "position_size_pct": 12.4,
       "confidence": 74,
+      "driver": "CATALYST",
+      "news_confidence": "medium",
       "rationale": "2-3 sentences grounded in data — cite specific indicators",
       "time_horizon": "5-7 days",
       "time_horizon_days": 6,
@@ -192,6 +252,15 @@ Required JSON structure:
   "avoid_reason": "Specific reason based on data — not a generic statement",
   "portfolio_cash_suggestion_pct": 20
 }
+
+FIELD RULES FOR driver / news_confidence:    <<< NEW
+- "driver": "TECHNICAL" if the trade stands on price/indicators alone (survives even if all
+  news is wrong). "CATALYST" if it depends on a news event. If CATALYST, a FRESH/RECENT
+  headline in this message must support it.
+- "news_confidence": "high" only if a FRESH headline directly supports the thesis; "medium"
+  if RECENT or only loosely supported; "low" if technicals-only or no clean news. A trade
+  with driver="CATALYST" may NOT have news_confidence="low" — if you can't support the
+  catalyst, switch it to TECHNICAL or drop the trade.
 
 CONFIDENCE THRESHOLDS:
 - >= 70: include in recommendations or short_recommendations
@@ -230,6 +299,16 @@ _TREND_PROMPT_LABELS = {
 }
 
 
+def _render_news_item(item: dict) -> str:  #  <<< NEW — shows freshness + full datestamp
+    """Render one headline with its freshness tag and real date, never time-only."""
+    fresh = item.get("freshness", "?")
+    when = item.get("time", "unknown-date")
+    src = item.get("source", "")
+    head = item.get("headline", "")
+    sent = item.get("sentiment", "")
+    return f"  [{fresh} | {when} | {src}] {head} ({sent})"
+
+
 def build_analysis_prompt(data_packet: dict) -> str:
     """
     Constructs the user-turn message for the morning analysis run.
@@ -244,6 +323,15 @@ def build_analysis_prompt(data_packet: dict) -> str:
     regime = data_packet.get("regime")
 
     lines = []
+
+    # Current date up top so the model anchors to TODAY, not to any headline.  <<< NEW
+    news_meta = news.get("_meta", {})
+    gen_at = news_meta.get("generated_at", "")
+    if gen_at:
+        lines.append(f"=== RUN CONTEXT ===")
+        lines.append(f"Current datetime: {gen_at}")
+        lines.append(f"Treat any event not supported by a FRESH/RECENT headline below as "
+                     f"unconfirmed. Anchor all reasoning to this datetime.\n")
 
     # Portfolio state
     lines.append("=== PORTFOLIO STATE ===")
@@ -272,7 +360,7 @@ def build_analysis_prompt(data_packet: dict) -> str:
     else:
         lines.append("Open short positions: none")
 
-    # Market regime — broad context before individual ticker data
+    # Market regime
     if regime:
         lines.append("\n=== MARKET REGIME ===")
         vix = regime.get("vix_level")
@@ -292,7 +380,7 @@ def build_analysis_prompt(data_packet: dict) -> str:
         lines.append(f"Lagging sectors: {', '.join(regime.get('lagging_sectors', []))}")
         lines.append(f"Summary: {regime.get('regime_summary', '')}")
 
-    # Earnings catalysts (highest priority section)
+    # Earnings catalysts
     if earnings_today:
         lines.append(f"\n=== EARNINGS TODAY (HIGH PRIORITY) ===")
         lines.append(", ".join(earnings_today))
@@ -329,21 +417,39 @@ def build_analysis_prompt(data_packet: dict) -> str:
             line += f" | BB: {bb_signal}"
         lines.append(line)
 
-    # News
+    # News — now with freshness gating and an explicit thin-news warning.  <<< CHANGED
     lines.append("\n=== NEWS ===")
+    if news_meta:
+        lines.append(
+            f"News freshness: {news_meta.get('total_fresh_items', 0)} fresh items across "
+            f"{news_meta.get('tickers_covered', 0)}/{news_meta.get('tickers_requested', 0)} "
+            f"tickers; newest item {news_meta.get('newest_item_age_hours', 'N/A')}h old."
+        )
+        if news_meta.get("news_is_thin"):
+            lines.append(
+                "⚠ NO_FRESH_NEWS / THIN NEWS: Fresh news is sparse this run. Do NOT invent "
+                "catalysts. Default to TECHNICAL drivers with news_confidence=\"low\", and "
+                "lean on the macro sanity-check before any macro thesis."
+            )
+
     market_news = news.get("market", [])
     if market_news:
         lines.append("Market headlines:")
         for item in market_news[:5]:
-            lines.append(f"  [{item.get('source','')} {item.get('time','')}] {item.get('headline','')} ({item.get('sentiment','')})")
+            lines.append(_render_news_item(item))
 
+    has_ticker_news = False
     for ticker, headlines in news.items():
-        if ticker == "market":
+        if ticker in ("market", "_meta"):
             continue
         if headlines:
+            has_ticker_news = True
             lines.append(f"\n{ticker} news:")
             for item in headlines[:3]:
-                lines.append(f"  [{item.get('source','')} {item.get('time','')}] {item.get('headline','')} ({item.get('sentiment','')})")
+                lines.append(_render_news_item(item))
+
+    if not has_ticker_news:
+        lines.append("\nNo fresh per-ticker news available this run. Technicals only.")
 
     lines.append("\nReturn your analysis as a JSON object matching the required schema.")
     return "\n".join(lines)
