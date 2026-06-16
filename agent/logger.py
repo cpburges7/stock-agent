@@ -10,7 +10,17 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-LOG_PATH = Path(__file__).parent.parent / "logs" / "trades.json"
+# Persist to a Railway Volume when DATA_DIR is set (survives deploys/restarts),
+# otherwise fall back to the local logs/ folder for development.
+import os
+_DATA_DIR = os.getenv("DATA_DIR")
+if _DATA_DIR:
+    _BASE = Path(_DATA_DIR)
+else:
+    _BASE = Path(__file__).parent.parent / "logs"
+_BASE.mkdir(parents=True, exist_ok=True)
+
+LOG_PATH = _BASE / "trades.json"
 
 logger = logging.getLogger(__name__)
 
