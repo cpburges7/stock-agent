@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from agent import logger as trade_logger
 from agent.data_fetcher import build_data_packet
 from agent.prompts import MODEL, SYSTEM_PROMPT, build_analysis_prompt
+from agent.reallocation import evaluate_swaps, build_held_conviction  # <<< NEW (swap feature)
 
 load_dotenv()
 
@@ -254,6 +255,30 @@ def run_analysis(data_packet: dict | None = None, triggered_by: str = "manual") 
 
     # Validate and correct all position sizes / commission math
     result = _validate_output(result, portfolio)
+
+    # ---- Swap / reallocation analysis ----  <<< NEW (swap feature)
+    try:
+        conviction_map = {
+            h["ticker"]: h.get("conviction", 50)
+            for h in result.get("held_conviction", [])
+        }
+        held = build_held_conviction(
+            portfolio.get("open_positions", []),
+            portfolio.get("open_shorts", []),
+            conviction_map,
+        )
+        held_tickers = {h["ticker"] for h in held}
+        new_candidates = [
+            {"ticker": r["ticker"], "confidence": r.get("confidence", 0)}
+            for r in result.get("recommendations", []) + result.get("short_recommendations", [])
+            if r["ticker"] not in held_tickers
+        ]
+        result["swap_suggestions"] = evaluate_swaps(held, new_candidates)
+        if result["swap_suggestions"]:
+            log.info("Swap suggestions: %d found", len(result["swap_suggestions"]))
+    except Exception as e:
+        log.error("Swap evaluation failed (non-fatal): %s", e)
+        result["swap_suggestions"] = []
 
     # Persist
     run_id = trade_logger.save_analysis(result, triggered_by=triggered_by)

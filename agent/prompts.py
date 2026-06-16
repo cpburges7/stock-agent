@@ -195,6 +195,17 @@ OUTPUT FORMAT — CRITICAL
 Return ONLY a valid JSON object. No markdown fences, no backticks, no preamble, no explanation
 outside the JSON structure. The response must be parseable by json.loads() with zero modification.
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HELD-POSITION RE-SCORING (for swap analysis)    <<< NEW BLOCK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+The portfolio state lists positions I currently hold. For EACH held ticker (long or short),
+produce a fresh conviction score 0-100 based on TODAY's technicals and news — exactly as you
+would score a new idea. This is NOT about whether to buy more; it is a neutral "how strong is
+this position right now" read. A holding that has deteriorated (lost its trend, MACD rolled
+over, news turned) should score LOW even though I own it. Output these in a "held_conviction"
+array. This lets the system compare my weakest holding against your best new idea and surface
+possible swaps. Score every held ticker, even ones you would also recommend buying.
+
 Required JSON structure:
 {
   "analysis_date": "YYYY-MM-DD",
@@ -246,6 +257,13 @@ Required JSON structure:
       "direction": "LONG",
       "confidence": 62,
       "watch_for": "Specific price level or event that would trigger an entry"
+    }
+  ],
+  "held_conviction": [
+    {
+      "ticker": "SOFI",
+      "conviction": 58,
+      "current_assessment": "1 sentence: is this position still strong, weakening, or broken today?"
     }
   ],
   "avoid": ["TSLA"],
