@@ -10,17 +10,23 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Persist to a Railway Volume when DATA_DIR is set (survives deploys/restarts),
-# otherwise fall back to the local logs/ folder for development.
+# Resolve at call time (not import time) so DATA_DIR is always current even if
+# the module is imported before Railway finishes injecting environment variables.
 import os
-_DATA_DIR = os.getenv("DATA_DIR")
-if _DATA_DIR:
-    _BASE = Path(_DATA_DIR)
-else:
-    _BASE = Path(__file__).parent.parent / "logs"
-_BASE.mkdir(parents=True, exist_ok=True)
 
-LOG_PATH = _BASE / "trades.json"
+_FALLBACK_BASE = Path(__file__).parent.parent / "logs"
+
+
+def _log_path() -> Path:
+    data_dir = os.getenv("DATA_DIR")
+    base = Path(data_dir) if data_dir else _FALLBACK_BASE
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "trades.json"
+
+
+def _snapshot_path() -> Path:
+    return _log_path().parent / "snapshots.json"
+
 
 logger = logging.getLogger(__name__)
 
@@ -35,23 +41,24 @@ _DEFAULT_PORTFOLIO = {
 
 
 def _read() -> dict:
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not LOG_PATH.exists():
+    path = _log_path()
+    if not path.exists():
+        logger.debug("trades.json not found at %s — returning empty state", path)
         return dict(_EMPTY)
     try:
-        with open(LOG_PATH) as f:
+        with open(path) as f:
             data = json.load(f)
         for k, v in _EMPTY.items():
             data.setdefault(k, v)
         return data
     except (json.JSONDecodeError, OSError) as e:
-        logger.error("Could not read trades.json: %s", e)
+        logger.error("Could not read trades.json at %s: %s", path, e)
         return dict(_EMPTY)
 
 
 def _write(data: dict) -> None:
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(LOG_PATH, "w") as f:
+    path = _log_path()
+    with open(path, "w") as f:
         json.dump(data, f, indent=2, default=str)
 
 
@@ -72,9 +79,12 @@ def save_analysis(result: dict, triggered_by: str = "manual") -> str:
 
 def get_portfolio_state() -> dict:
     """Return the current portfolio state, or the default starting state if none saved."""
+    path = _log_path()
+    logger.debug("Loading portfolio from %s", path)
     data = _read()
     portfolio = data.get("portfolio")
     if portfolio is None:
+        logger.warning("No portfolio saved at %s — returning default starting state", path)
         return dict(_DEFAULT_PORTFOLIO)
     return portfolio
 
@@ -267,37 +277,37 @@ def get_calibration_buckets(positions: list[dict] | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Snapshot log (logs/snapshots.json)
+# Snapshot log (snapshots.json, same directory as trades.json)
 # ---------------------------------------------------------------------------
-
-SNAPSHOT_PATH = LOG_PATH.parent / "snapshots.json"
 
 
 def get_previous_snapshot() -> dict | None:
     """Return the most recent EOD snapshot, or None if none saved yet."""
-    if not SNAPSHOT_PATH.exists():
+    path = _snapshot_path()
+    if not path.exists():
         return None
     try:
-        with open(SNAPSHOT_PATH) as f:
+        with open(path) as f:
             snapshots = json.load(f)
         return snapshots[-1] if snapshots else None
     except (json.JSONDecodeError, OSError) as e:
-        logger.error("Could not read snapshots.json: %s", e)
+        logger.error("Could not read snapshots.json at %s: %s", path, e)
         return None
 
 
 def save_snapshot(snapshot: dict) -> None:
     """Append an EOD snapshot to snapshots.json."""
-    SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    path = _snapshot_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
     snapshots: list = []
-    if SNAPSHOT_PATH.exists():
+    if path.exists():
         try:
-            with open(SNAPSHOT_PATH) as f:
+            with open(path) as f:
                 snapshots = json.load(f)
         except (json.JSONDecodeError, OSError):
             snapshots = []
     snapshots.append(snapshot)
-    with open(SNAPSHOT_PATH, "w") as f:
+    with open(path, "w") as f:
         json.dump(snapshots, f, indent=2, default=str)
     logger.info(
         "Snapshot saved: date=%s, estimated_value=%.2f",
@@ -308,11 +318,12 @@ def save_snapshot(snapshot: dict) -> None:
 
 def get_all_snapshots() -> list[dict]:
     """Return all EOD snapshots in chronological order."""
-    if not SNAPSHOT_PATH.exists():
+    path = _snapshot_path()
+    if not path.exists():
         return []
     try:
-        with open(SNAPSHOT_PATH) as f:
+        with open(path) as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError) as e:
-        logger.error("Could not read snapshots.json: %s", e)
+        logger.error("Could not read snapshots.json at %s: %s", path, e)
         return []

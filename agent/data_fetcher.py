@@ -76,10 +76,26 @@ def build_data_packet(portfolio_override: dict | None = None) -> dict:
     else:
         portfolio = trade_logger.get_portfolio_state()
         log.info(
-            "Using persisted portfolio: cash=%.2f, total=%.2f",
+            "Using persisted portfolio: cash=%.2f, total=%.2f, %d long, %d short",
             portfolio.get("cash", 0),
             portfolio.get("total_value", 0),
+            len(portfolio.get("open_positions", [])),
+            len(portfolio.get("open_shorts", [])),
         )
+
+    # Inject any held tickers missing from the watchlist so Claude always has
+    # market data for current positions (e.g. NFLX, XOM if not in screener BASE).
+    all_positions = portfolio.get("open_positions", []) + portfolio.get("open_shorts", [])
+    held_tickers = [
+        pos.get("symbol") or pos.get("ticker")
+        for pos in all_positions
+    ]
+    missing_held = [t for t in held_tickers if t and t not in market_data]
+    if missing_held:
+        log.info("Fetching technicals for %d held tickers not in watchlist: %s", len(missing_held), missing_held)
+        from agent.technical import get_technicals
+        extra = get_technicals(missing_held)
+        market_data.update(extra)
 
     # 5. Market regime (single batch yfinance call; failures return a safe default)
     log.info("Fetching market regime...")
