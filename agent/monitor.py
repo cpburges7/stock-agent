@@ -76,7 +76,7 @@ def _days_held(opened_date_str: str) -> int:
 
 def _check_long(pos: dict, current_price: float) -> dict | None:
     """Return an alert dict if a long position needs action, else None."""
-    ticker = pos["ticker"]
+    ticker = pos.get("symbol") or pos.get("ticker")
     entry = pos.get("entry_price", 0)
     target = pos.get("target_price", float("inf"))
     stop = pos.get("stop_loss", 0)
@@ -130,7 +130,7 @@ def _check_long(pos: dict, current_price: float) -> dict | None:
 
 def _check_short(pos: dict, current_price: float) -> dict | None:
     """Return an alert dict if a short position needs action, else None."""
-    ticker = pos["ticker"]
+    ticker = pos.get("symbol") or pos.get("ticker")
     entry = pos.get("entry_price", 0)
     cover = pos.get("cover_target", 0)
     stop = pos.get("stop_loss", float("inf"))
@@ -186,9 +186,9 @@ def check_positions() -> list[dict]:
         return []
 
     all_tickers = list({
-        pos["ticker"]
+        pos.get("symbol") or pos.get("ticker")
         for pos in (open_positions + open_shorts)
-        if "ticker" in pos
+        if pos.get("symbol") or pos.get("ticker")
     })
 
     prices = _get_current_prices(all_tickers)
@@ -197,16 +197,20 @@ def check_positions() -> list[dict]:
     alerts = []
 
     for pos in open_positions:
-        ticker = pos.get("ticker")
+        ticker = pos.get("symbol") or pos.get("ticker")
         if not ticker or ticker not in prices:
+            if not ticker:
+                log.warning("Skipping long position with no symbol/ticker key: %s", pos)
             continue
         alert = _check_long(pos, prices[ticker])
         if alert:
             alerts.append(alert)
 
     for pos in open_shorts:
-        ticker = pos.get("ticker")
+        ticker = pos.get("symbol") or pos.get("ticker")
         if not ticker or ticker not in prices:
+            if not ticker:
+                log.warning("Skipping short position with no symbol/ticker key: %s", pos)
             continue
         alert = _check_short(pos, prices[ticker])
         if alert:

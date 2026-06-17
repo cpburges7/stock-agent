@@ -119,8 +119,9 @@ def build_held_conviction(open_positions: list[dict],
     """
     out = []
     for pos in (open_positions or []) + (open_shorts or []):
-        ticker = pos.get("ticker")
+        ticker = pos.get("symbol") or pos.get("ticker")
         if not ticker:
+            log.warning("Skipping position with no symbol/ticker key: %s", pos)
             continue
         out.append({
             "ticker": ticker,

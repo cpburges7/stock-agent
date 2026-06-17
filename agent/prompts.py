@@ -13,6 +13,10 @@ CHANGES FROM YOUR ORIGINAL (marked #  <<< NEW / #  <<< CHANGED):
      and surfaces the news _meta block + a NO_FRESH_NEWS warning when news is thin.
 """
 
+import logging
+
+log = logging.getLogger(__name__)
+
 MODEL = "claude-sonnet-4-6"
 
 SYSTEM_PROMPT = """You are an aggressive but disciplined stock trading analyst competing in a \
@@ -360,9 +364,13 @@ def build_analysis_prompt(data_packet: dict) -> str:
     if open_positions:
         lines.append("\nOpen long positions:")
         for pos in open_positions:
+            ticker = pos.get("symbol") or pos.get("ticker")
+            if not ticker:
+                log.warning("Skipping position with no symbol/ticker key: %s", pos)
+                continue
             lines.append(
-                f"  {pos['ticker']}: {pos['shares']} shares @ ${pos['entry_price']:.2f} "
-                f"(target ${pos['target_price']:.2f}, stop ${pos['stop_loss']:.2f})"
+                f"  {ticker}: {pos.get('shares', '?')} shares @ ${pos.get('entry_price', 0):.2f} "
+                f"(target ${pos.get('target_price', 0):.2f}, stop ${pos.get('stop_loss', 0):.2f})"
             )
     else:
         lines.append("Open long positions: none")
@@ -371,9 +379,13 @@ def build_analysis_prompt(data_packet: dict) -> str:
     if open_shorts:
         lines.append("\nOpen short positions:")
         for pos in open_shorts:
+            ticker = pos.get("symbol") or pos.get("ticker")
+            if not ticker:
+                log.warning("Skipping short with no symbol/ticker key: %s", pos)
+                continue
             lines.append(
-                f"  {pos['ticker']}: {pos['shares']} shares short @ ${pos['entry_price']:.2f} "
-                f"(cover ${pos['cover_target']:.2f}, stop ${pos['stop_loss']:.2f})"
+                f"  {ticker}: {pos.get('shares', '?')} shares short @ ${pos.get('entry_price', 0):.2f} "
+                f"(cover ${pos.get('cover_target', 0):.2f}, stop ${pos.get('stop_loss', 0):.2f})"
             )
     else:
         lines.append("Open short positions: none")
@@ -479,7 +491,10 @@ def build_monitor_prompt(positions: list, current_prices: dict, market_time: str
     """
     lines = [f"Current market time: {market_time}", "", "Open positions to evaluate:"]
     for pos in positions:
-        ticker = pos["ticker"]
+        ticker = pos.get("symbol") or pos.get("ticker")
+        if not ticker:
+            log.warning("Skipping monitor position with no symbol/ticker key: %s", pos)
+            continue
         current = current_prices.get(ticker, pos.get("entry_price"))
         direction = pos.get("direction", "LONG")
         entry = pos.get("entry_price", 0)

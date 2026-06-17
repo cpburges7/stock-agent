@@ -84,9 +84,9 @@ def build_eod_snapshot() -> dict:
         return snapshot
 
     all_tickers = list({
-        pos["ticker"]
+        pos.get("symbol") or pos.get("ticker")
         for pos in (open_positions + open_shorts)
-        if "ticker" in pos
+        if pos.get("symbol") or pos.get("ticker")
     })
     prices = get_current_prices(all_tickers)
     log.info("EOD snapshot: fetched prices for %d/%d tickers", len(prices), len(all_tickers))
@@ -97,7 +97,10 @@ def build_eod_snapshot() -> dict:
     short_liability = 0.0
 
     for pos in open_positions:
-        ticker = pos.get("ticker", "")
+        ticker = pos.get("symbol") or pos.get("ticker") or ""
+        if not ticker:
+            log.warning("Skipping long position with no symbol/ticker key: %s", pos)
+            continue
         entry = pos.get("entry_price", 0)
         shares = pos.get("shares", 0)
         entry_date = pos.get("entry_date") or pos.get("opened_date", "")
@@ -131,7 +134,10 @@ def build_eod_snapshot() -> dict:
         })
 
     for pos in open_shorts:
-        ticker = pos.get("ticker", "")
+        ticker = pos.get("symbol") or pos.get("ticker") or ""
+        if not ticker:
+            log.warning("Skipping short position with no symbol/ticker key: %s", pos)
+            continue
         entry = pos.get("entry_price", 0)
         shares = pos.get("shares", 0)
         entry_date = pos.get("entry_date") or pos.get("opened_date", "")
