@@ -93,7 +93,6 @@ def build_data_packet(portfolio_override: dict | None = None) -> dict:
     missing_held = [t for t in held_tickers if t and t not in market_data]
     if missing_held:
         log.info("Fetching technicals for %d held tickers not in watchlist: %s", len(missing_held), missing_held)
-        from agent.technical import get_technicals
         extra = get_technicals(missing_held)
         market_data.update(extra)
 
